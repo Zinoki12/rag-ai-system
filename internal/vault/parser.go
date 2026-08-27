@@ -8,8 +8,7 @@ import (
 )
 
 type yamlInfo struct {
-	Title   string
-	Created string
+	Title string
 }
 
 var ErrUnclosedFrontmatter = errors.New("unclosed frontmatter")
@@ -50,8 +49,6 @@ func yamlParser(text string) (yamlInfo, error) {
 			switch strings.ToLower(key) {
 			case "title":
 				yaml.Title = val
-			case "created":
-				yaml.Created = val
 			}
 		}
 	}

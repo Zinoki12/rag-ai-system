@@ -47,8 +47,26 @@ func run() error {
 		log.Printf("Warnings:\n%v", err)
 	}
 
-	for i, file := range files {
-		fmt.Printf("File %d: path:%s hex:%x title:%s\n", i+1, file.Path, file.Hash, file.Name)
+	store := storage.New(pool)
+
+	var writtenCount, skippedCount int
+
+	for _, file := range files {
+		id, written, err := store.UpsertNote(ctx, file)
+		if err != nil {
+			return fmt.Errorf("error inserting note %s: %w", file.Path, err)
+		}
+
+		if written {
+			writtenCount++
+			fmt.Printf("Записана заметка [%s], ID: %d\n", file.Path, id)
+		} else {
+			skippedCount++
+			fmt.Printf("Пропущена (без изменений) [%s], ID: %d\n", file.Path, id)
+		}
 	}
+
+	fmt.Printf("\nИтог: записано %d, пропущено %d\n", writtenCount, skippedCount)
+
 	return nil
 }

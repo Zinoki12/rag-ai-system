@@ -7,21 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-)
 
-type FileInfo struct {
-	Path string
-	Name string
-	Text string
-	Hash [32]byte
-	Date string
-}
+	"github.com/Zinoki12/rag-ai-system/internal/model"
+)
 
 // This function returns a slice of file's info and error, but errors actually 2 types:
 // 1. Simple warning about crashed file
 // 2. Critical error (like crash system, harddrive , etc...)
-func Scan(root string) ([]*FileInfo, error) {
-	var files []*FileInfo
+func Scan(root string) ([]*model.Note, error) {
+	var files []*model.Note
 	var warnErrs []error
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -53,12 +47,11 @@ func Scan(root string) ([]*FileInfo, error) {
 				return fmt.Errorf("parse yaml in %s: %w", path, err)
 			}
 
-			fileInfo := &FileInfo{
+			fileInfo := &model.Note{
 				Path: relPath,
 				Name: yaml.Title,
 				Text: text,
 				Hash: sha256.Sum256(content),
-				Date: yaml.Created,
 			}
 			files = append(files, fileInfo)
 		}
@@ -66,7 +59,7 @@ func Scan(root string) ([]*FileInfo, error) {
 		return nil
 	})
 	if err != nil {
-		return []*FileInfo{}, fmt.Errorf("error walking the path %q: %w", root, err)
+		return []*model.Note{}, fmt.Errorf("error walking the path %q: %w", root, err)
 	}
 	return files, errors.Join(warnErrs...)
 }

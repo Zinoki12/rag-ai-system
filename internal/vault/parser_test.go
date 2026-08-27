@@ -73,9 +73,6 @@ title: Заметка с разделителем
 			if got.Title != tt.wantTitle {
 				t.Errorf("got Title = %q, want %q", got.Title, tt.wantTitle)
 			}
-			if got.Created != tt.wantCreated {
-				t.Errorf("got Created = %q, want %q", got.Created, tt.wantCreated)
-			}
 		})
 	}
 }
