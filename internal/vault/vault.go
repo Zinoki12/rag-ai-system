@@ -50,7 +50,7 @@ func Scan(root string) ([]*model.Note, error) {
 			fileInfo := &model.Note{
 				Path: relPath,
 				Name: yaml.Title,
-				Text: text,
+				Text: yaml.Body,
 				Hash: sha256.Sum256(content),
 			}
 			files = append(files, fileInfo)

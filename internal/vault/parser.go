@@ -9,44 +9,64 @@ import (
 
 type yamlInfo struct {
 	Title string
+	Body  string
 }
 
 var ErrUnclosedFrontmatter = errors.New("unclosed frontmatter")
 
 func yamlParser(text string) (yamlInfo, error) {
+	// Убираем BOM, если он есть
+	text = strings.TrimPrefix(text, "\ufeff")
+
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	yaml := yamlInfo{}
-	lineNum := 0
+	var body strings.Builder
+
+	foundStart := false
 	inFrontmatter := false
+	bodyStarted := false
 
 	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
+		rawLine := scanner.Text()
+		trimmedLine := strings.TrimSpace(rawLine)
 
-		if lineNum == 1 {
-			if line == "---" {
+		if bodyStarted {
+			body.WriteString(rawLine)
+			body.WriteString("\n")
+			continue
+		}
+
+		if !foundStart {
+			if trimmedLine == "" {
+				continue
+			}
+			if trimmedLine == "---" {
+				foundStart = true
 				inFrontmatter = true
 				continue
 			}
+
+			yaml.Body = strings.TrimSpace(text)
 			return yaml, nil
 		}
 
-		if inFrontmatter && line == "---" {
+		if inFrontmatter && trimmedLine == "---" {
 			inFrontmatter = false
-			break
+			bodyStarted = true
+			continue
 		}
 
 		if inFrontmatter {
-			key, val, ok := strings.Cut(line, ":")
+			key, val, ok := strings.Cut(trimmedLine, ":")
 			if !ok {
 				continue
 			}
 
-			key = strings.TrimSpace(key)
+			key = strings.ToLower(strings.TrimSpace(key))
 			val = strings.TrimSpace(val)
 			val = strings.Trim(val, `"'`)
 
-			switch strings.ToLower(key) {
+			switch key {
 			case "title":
 				yaml.Title = val
 			}
@@ -61,5 +81,6 @@ func yamlParser(text string) (yamlInfo, error) {
 		return yamlInfo{}, ErrUnclosedFrontmatter
 	}
 
+	yaml.Body = strings.TrimSpace(body.String())
 	return yaml, nil
 }

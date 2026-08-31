@@ -15,6 +15,6 @@ CREATE TABLE IF NOT EXISTS chunks (
     note_id INTEGER REFERENCES notes (id) ON DELETE CASCADE,
     chunk_index SMALLINT,
     chunk_text TEXT,
-    embedding vector (1024),
+    embedding vector (768),
     embedding_model VARCHAR(255)
 );
