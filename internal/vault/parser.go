@@ -12,6 +12,10 @@ type yamlInfo struct {
 	Body  string
 }
 
+const (
+	maxBuffSize = 10 * 1024 * 1024
+)
+
 var ErrUnclosedFrontmatter = errors.New("unclosed frontmatter")
 
 func yamlParser(text string) (yamlInfo, error) {
@@ -19,6 +23,8 @@ func yamlParser(text string) (yamlInfo, error) {
 	text = strings.TrimPrefix(text, "\ufeff")
 
 	scanner := bufio.NewScanner(strings.NewReader(text))
+	initBuff := make([]byte, 256*1024)
+	scanner.Buffer(initBuff, maxBuffSize)
 	yaml := yamlInfo{}
 	var body strings.Builder
 

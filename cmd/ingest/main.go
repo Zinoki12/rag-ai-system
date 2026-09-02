@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Zinoki12/rag-ai-system/internal/chunk"
 	"github.com/Zinoki12/rag-ai-system/internal/storage"
 	"github.com/Zinoki12/rag-ai-system/internal/vault"
 )
@@ -52,7 +53,12 @@ func run() error {
 	var writtenCount, skippedCount int
 
 	for _, file := range files {
-		id, written, err := store.UpsertNote(ctx, file)
+		if err != nil {
+			return fmt.Errorf("failed to cut file: %w", err)
+		}
+		id, written, err := store.SaveNoteWithChunks(ctx, file, func() ([]string, error) {
+			return chunk.Cut(file.Text, 800)
+		})
 		if err != nil {
 			return fmt.Errorf("error inserting note %s: %w", file.Path, err)
 		}

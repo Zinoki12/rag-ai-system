@@ -8,6 +8,10 @@ import (
 	"unicode/utf8"
 )
 
+const (
+	maxBuffSize = 10 * 1024 * 1024
+)
+
 var ErrInvalidChunkSize = errors.New("chunk size must be greater than 0")
 
 func Cut(text string, chunkSize int) ([]string, error) {
@@ -77,6 +81,8 @@ func Cut(text string, chunkSize int) ([]string, error) {
 
 func extractParagraphs(text string) ([]string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(text))
+	initBuff := make([]byte, 256*1024)
+	scanner.Buffer(initBuff, maxBuffSize)
 	var paragraphs []string
 	var curPara strings.Builder
 

@@ -84,6 +84,14 @@ func TestCut(t *testing.T) {
 			wantErr:      nil,
 			validateJoin: true,
 		},
+		{
+			name:         "Абзац длиннее 64 КБ (проверка нарезки гигантских строк)",
+			text:         strings.Repeat("А", 70000), // 70 000 русских букв = 140 КБ (гарантированно > 64 КБ)
+			chunkSize:    1000,
+			wantCount:    70, // 70 000 / 1000 = ровно 70 чанков
+			wantErr:      nil,
+			validateJoin: true,
+		},
 	}
 
 	for _, tt := range tests {
