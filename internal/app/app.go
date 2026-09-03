@@ -134,12 +134,23 @@ func (a *App) Search(ctx context.Context, query string, topK int) ([]storage.Hit
 	return a.Store.Search(ctx, a.Space, vectors[0], topK)
 }
 
-// Answer is a generated response with the material it was based on.
+// Answer is a generated response with the material it was shown.
 type Answer struct {
 	Text     string
 	Model    string
 	Passages []rag.Passage
 	Sources  []string
+
+	// TopScore is the similarity of the best retrieved chunk.
+	//
+	// It is reported rather than acted on. A relevance floor below which the
+	// question is answered "not in the knowledge base" without calling the
+	// model would be a real improvement, but the cutoff differs per embedding
+	// model and per corpus, and picking one against a five-note test vault
+	// would be fitting a constant to a fixture. Surfacing the number lets a
+	// reader judge, and lets the threshold be calibrated later against real
+	// content.
+	TopScore float64
 }
 
 // Ask runs the full pipeline: embed the question, retrieve, prompt, generate.
@@ -161,12 +172,16 @@ func (a *App) Ask(ctx context.Context, question string, topK int) (Answer, error
 		return Answer{}, err
 	}
 
-	return Answer{
+	answer := Answer{
 		Text:     text,
 		Model:    a.LLM.Model(),
 		Passages: passages,
 		Sources:  rag.Sources(passages),
-	}, nil
+	}
+	if len(hits) > 0 {
+		answer.TopScore = hits[0].Score // Search returns best first
+	}
+	return answer, nil
 }
 
 // Passages converts search hits into the prompt package's own type.

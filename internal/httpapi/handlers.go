@@ -137,10 +137,17 @@ type askRequest struct {
 }
 
 type askResponse struct {
-	Answer  string   `json:"answer"`
-	Model   string   `json:"model"`
-	Space   string   `json:"space"`
+	Answer string `json:"answer"`
+	Model  string `json:"model"`
+	Space  string `json:"space"`
+	// Sources are the notes that were retrieved and shown to the model, not a
+	// claim about what the answer rests on: the model may well have said the
+	// knowledge base has no answer.
 	Sources []string `json:"sources"`
+	// TopScore is the similarity of the best retrieved chunk, so a client can
+	// judge how much the retrieval is worth. See app.Answer on why there is no
+	// relevance threshold yet.
+	TopScore float64 `json:"top_score"`
 }
 
 func handleAsk(a Service, log *slog.Logger) http.HandlerFunc {
@@ -162,10 +169,11 @@ func handleAsk(a Service, log *slog.Logger) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, askResponse{
-			Answer:  answer.Text,
-			Model:   answer.Model,
-			Space:   a.SpaceName(),
-			Sources: answer.Sources,
+			Answer:   answer.Text,
+			Model:    answer.Model,
+			Space:    a.SpaceName(),
+			Sources:  answer.Sources,
+			TopScore: answer.TopScore,
 		})
 	}
 }

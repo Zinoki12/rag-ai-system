@@ -83,14 +83,19 @@ func printAnswer(ctx context.Context, a *app.App, question string, topK int) err
 
 	fmt.Println(answer.Text)
 
+	// "Показано модели", not "Источники": these are the fragments that were
+	// retrieved and put in the prompt. Whether the answer actually rests on
+	// them is not something this program knows, and calling them sources when
+	// the model just said the base has no answer would be a claim it cannot
+	// support.
 	if len(answer.Sources) > 0 {
-		fmt.Println("\nИсточники:")
+		fmt.Println("\nПоказано модели:")
 		for _, s := range answer.Sources {
 			fmt.Printf("  - %s\n", s)
 		}
 	}
-	fmt.Printf("\n(модель: %s, пространство: %s, фрагментов: %d)\n",
-		answer.Model, a.Space.Space, len(answer.Passages))
+	fmt.Printf("\n(модель: %s, пространство: %s, фрагментов: %d, лучшая близость: %.3f)\n",
+		answer.Model, a.Space.Space, len(answer.Passages), answer.TopScore)
 	return nil
 }
 
