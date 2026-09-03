@@ -26,7 +26,11 @@ var providerDefaults = map[string]struct {
 	model string
 	rps   float64
 }{
-	ProviderGoogle: {model: "gemini-2.5-flash", rps: 1},
+	// Verified live on 2026-09-03. Gemini model names retire: the API answers a
+	// withdrawn one with a 404 that names the replacement, so if generation
+	// starts failing with "no longer available to new users", read the message
+	// and update this line.
+	ProviderGoogle: {model: "gemini-3.6-flash", rps: 1},
 	// llama3.2 is the smallest model that answers coherently in Russian and
 	// still fits comfortably on a laptop.
 	ProviderOllama: {model: "llama3.2", rps: 0},
