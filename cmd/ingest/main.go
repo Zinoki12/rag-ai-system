@@ -17,12 +17,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"github.com/Zinoki12/rag-ai-system/internal/app"
 	"github.com/Zinoki12/rag-ai-system/internal/chunk"
 	"github.com/Zinoki12/rag-ai-system/internal/config"
 	"github.com/Zinoki12/rag-ai-system/internal/embed"
-	"github.com/Zinoki12/rag-ai-system/internal/migrate"
 	"github.com/Zinoki12/rag-ai-system/internal/storage"
 	"github.com/Zinoki12/rag-ai-system/internal/vault"
 )
@@ -54,28 +53,18 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	pool, err := storage.NewPool(ctx)
+	// No generation provider: indexing has no use for one, and requiring it
+	// would let a missing LLM_PROVIDER break a run that never calls a model.
+	a, err := app.Open(ctx, app.Options{WithLLM: false})
 	if err != nil {
 		return err
 	}
-	defer pool.Close()
+	defer a.Close()
 
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		return fmt.Errorf("ping database: %w", err)
-	}
-
-	if err := migrate.Up(ctx, pool); err != nil {
+	if err := ingestNotes(ctx, a.Store, vaultPath); err != nil {
 		return err
 	}
-
-	store := storage.New(pool)
-
-	if err := ingestNotes(ctx, store, vaultPath); err != nil {
-		return err
-	}
-	return embedPending(ctx, store)
+	return embedPending(ctx, a)
 }
 
 // ingestNotes writes every markdown file in the vault as a note plus its chunks.
@@ -123,32 +112,17 @@ func ingestNotes(ctx context.Context, store *storage.Store, vaultPath string) er
 }
 
 // embedPending fills in vectors for chunks that do not have one yet.
-func embedPending(ctx context.Context, store *storage.Store) error {
-	cfg, err := embed.ConfigFromEnv()
-	if err != nil {
-		return err
-	}
-
-	provider, err := embed.New(ctx, cfg)
-	if err != nil {
-		return err
-	}
-
-	ref, err := store.EnsureSpace(ctx, provider.Space())
-	if err != nil {
-		return err
-	}
-
-	before, err := store.Stats(ctx, ref)
+func embedPending(ctx context.Context, a *app.App) error {
+	before, err := a.Store.Stats(ctx, a.Space)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("\nПространство %s: %d чанков, векторов уже есть %d\n",
-		ref.Space, before.Chunks, before.Embedded)
+		a.Space.Space, before.Chunks, before.Embedded)
 
 	done := 0
 	for {
-		pending, err := store.PendingChunks(ctx, ref, pendingBatch)
+		pending, err := a.Store.PendingChunks(ctx, a.Space, pendingBatch)
 		if err != nil {
 			return err
 		}
@@ -161,7 +135,7 @@ func embedPending(ctx context.Context, store *storage.Store) error {
 			texts[i] = c.Text
 		}
 
-		vectors, err := embed.Batched(ctx, provider, texts, embed.KindDocument)
+		vectors, err := embed.Batched(ctx, a.Embed, texts, embed.KindDocument)
 		if err != nil {
 			return fmt.Errorf("embed %d chunks: %w", len(texts), err)
 		}
@@ -170,7 +144,7 @@ func embedPending(ctx context.Context, store *storage.Store) error {
 		for i, c := range pending {
 			batch[i] = storage.ChunkVector{ChunkID: c.ID, Vector: vectors[i]}
 		}
-		if err := store.SaveEmbeddings(ctx, ref, batch); err != nil {
+		if err := a.Store.SaveEmbeddings(ctx, a.Space, batch); err != nil {
 			return err
 		}
 
@@ -178,10 +152,10 @@ func embedPending(ctx context.Context, store *storage.Store) error {
 		fmt.Printf("векторов посчитано %d из %d\n", before.Embedded+done, before.Chunks)
 	}
 
-	after, err := store.Stats(ctx, ref)
+	after, err := a.Store.Stats(ctx, a.Space)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nИтог: %d чанков, %d векторов в пространстве %s\n", after.Chunks, after.Embedded, ref.Space)
+	fmt.Printf("\nИтог: %d чанков, %d векторов в пространстве %s\n", after.Chunks, after.Embedded, a.Space.Space)
 	return nil
 }

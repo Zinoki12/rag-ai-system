@@ -10,6 +10,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,10 +37,19 @@ type Options struct {
 	// WithLLM also builds a generation provider. Commands that only index or
 	// search leave it off so a missing LLM_PROVIDER cannot fail their startup.
 	WithLLM bool
+
+	// Logger receives startup diagnostics, migrations included. Defaults to a
+	// plain-text handler on stderr, which suits a CLI; the server passes a JSON
+	// one.
+	Logger *slog.Logger
 }
 
 // Open connects, migrates and builds the configured providers.
 func Open(ctx context.Context, opts Options) (*App, error) {
+	if opts.Logger == nil {
+		opts.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
+
 	pool, err := storage.NewPool(ctx)
 	if err != nil {
 		return nil, err
@@ -59,7 +70,7 @@ func Open(ctx context.Context, opts Options) (*App, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	if err := migrate.Up(ctx, pool); err != nil {
+	if err := migrate.Up(ctx, pool, opts.Logger); err != nil {
 		return nil, err
 	}
 
@@ -100,6 +111,14 @@ func (a *App) Close() {
 		a.Pool.Close()
 	}
 }
+
+// Stats reports index coverage for the active space.
+func (a *App) Stats(ctx context.Context) (storage.EmbeddingStats, error) {
+	return a.Store.Stats(ctx, a.Space)
+}
+
+// SpaceName names the active embedding space, for logs and responses.
+func (a *App) SpaceName() string { return a.Space.Space.String() }
 
 // Search embeds the query and returns the closest chunks.
 func (a *App) Search(ctx context.Context, query string, topK int) ([]storage.Hit, error) {

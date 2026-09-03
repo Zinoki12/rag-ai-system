@@ -12,6 +12,8 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -27,10 +29,25 @@ var migrationsFS embed.FS
 // would fail on a duplicate object. The value is arbitrary but must be stable.
 const advisoryLockID int64 = 0x7261676169 // "ragai" in ASCII
 
+// gooseLogger adapts goose's Printf/Fatalf logger to slog, so migration output
+// lands in the same stream and format as everything else the process logs
+// rather than as stray plain text among JSON lines.
+type gooseLogger struct{ log *slog.Logger }
+
+func (g gooseLogger) Printf(format string, v ...any) {
+	g.log.Info(strings.TrimSpace(fmt.Sprintf(format, v...)))
+}
+
+// Fatalf must not exit the process: goose calls it on errors that Up already
+// returns, and killing the program here would skip every deferred cleanup.
+func (g gooseLogger) Fatalf(format string, v ...any) {
+	g.log.Error(strings.TrimSpace(fmt.Sprintf(format, v...)))
+}
+
 // Up applies every pending migration. It is safe to call concurrently from
 // several processes: the second one blocks on the advisory lock and then finds
 // nothing left to do.
-func Up(ctx context.Context, pool *pgxpool.Pool) error {
+func Up(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	// Hold the lock on one dedicated connection for the whole run. Advisory
 	// locks are session-scoped, so it must be the same connection from
 	// pg_advisory_lock to pg_advisory_unlock — Acquire, not a pool call.
@@ -56,6 +73,9 @@ func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	defer db.Close()
 
 	goose.SetBaseFS(migrationsFS)
+	if log != nil {
+		goose.SetLogger(gooseLogger{log: log})
+	}
 	if err := goose.SetDialect("postgres"); err != nil {
 		return fmt.Errorf("set goose dialect: %w", err)
 	}
