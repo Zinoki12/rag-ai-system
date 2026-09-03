@@ -8,8 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Zinoki12/rag-ai-system/internal/app"
-	"github.com/Zinoki12/rag-ai-system/internal/storage"
+	"github.com/Zinoki12/rag-ai-system/knowledge"
 )
 
 // maxRequestBody bounds how much a client may send. Questions are short; a body
@@ -23,10 +22,10 @@ const maxRequestBody = 64 << 10
 // database, an embedding model or an API key — which is what makes it worth
 // testing the error paths, the ones hardest to reach through a live stack.
 type Service interface {
-	Stats(ctx context.Context) (storage.EmbeddingStats, error)
-	SpaceName() string
-	Search(ctx context.Context, query string, topK int) ([]storage.Hit, error)
-	Ask(ctx context.Context, question string, topK int) (app.Answer, error)
+	Stats(ctx context.Context) (knowledge.Stats, error)
+	Search(ctx context.Context, query string, topK int) ([]knowledge.Hit, error)
+	Ask(ctx context.Context, question string, topK int) (knowledge.Answer, error)
+	Index(ctx context.Context) (knowledge.IndexResult, error)
 }
 
 type errorResponse struct {
@@ -66,10 +65,11 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
 }
 
 type healthResponse struct {
-	Status string `json:"status"`
-	Space  string `json:"space"`
-	Chunks int    `json:"chunks"`
-	Vector int    `json:"vectors"`
+	Status  string `json:"status"`
+	Space   string `json:"space"`
+	Notes   int    `json:"notes"`
+	Chunks  int    `json:"chunks"`
+	Vectors int    `json:"vectors"`
 }
 
 // handleHealth reports whether the service can actually serve, not merely
@@ -83,10 +83,11 @@ func handleHealth(a Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, healthResponse{
-			Status: "ok",
-			Space:  a.SpaceName(),
-			Chunks: stats.Chunks,
-			Vector: stats.Embedded,
+			Status:  "ok",
+			Space:   stats.Space.String(),
+			Notes:   stats.Notes,
+			Chunks:  stats.Chunks,
+			Vectors: stats.Embedded,
 		})
 	}
 }
@@ -109,7 +110,7 @@ type searchResponse struct {
 	Hits  []hitResponse `json:"hits"`
 }
 
-func handleSearch(a Service, log *slog.Logger) http.HandlerFunc {
+func handleSearch(a Service, space string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req searchRequest
 		if err := decodeBody(w, r, &req); err != nil {
@@ -127,7 +128,7 @@ func handleSearch(a Service, log *slog.Logger) http.HandlerFunc {
 			respondUpstreamError(w, r, log, "search failed", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, searchResponse{Space: a.SpaceName(), Hits: toHits(hits)})
+		writeJSON(w, http.StatusOK, searchResponse{Space: space, Hits: toHits(hits)})
 	}
 }
 
@@ -150,7 +151,7 @@ type askResponse struct {
 	TopScore float64 `json:"top_score"`
 }
 
-func handleAsk(a Service, log *slog.Logger) http.HandlerFunc {
+func handleAsk(a Service, space string, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req askRequest
 		if err := decodeBody(w, r, &req); err != nil {
@@ -171,7 +172,7 @@ func handleAsk(a Service, log *slog.Logger) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, askResponse{
 			Answer:   answer.Text,
 			Model:    answer.Model,
-			Space:    a.SpaceName(),
+			Space:    space,
 			Sources:  answer.Sources,
 			TopScore: answer.TopScore,
 		})
@@ -210,17 +211,38 @@ func clampK(k int) int {
 	}
 }
 
-func toHits(hits []storage.Hit) []hitResponse {
+func toHits(hits []knowledge.Hit) []hitResponse {
 	// Non-nil so an empty result encodes as [] rather than null.
 	out := make([]hitResponse, 0, len(hits))
 	for _, h := range hits {
 		out = append(out, hitResponse{
 			Score:      h.Score,
-			NotePath:   h.NotePath,
-			NoteName:   h.NoteName,
-			ChunkIndex: h.ChunkIndex,
+			NotePath:   h.Source,
+			NoteName:   h.Title,
+			ChunkIndex: h.Index,
 			Text:       h.Text,
 		})
 	}
 	return out
+}
+
+// handleReindex starts a background indexing pass.
+//
+// 202 rather than 200: the work has been accepted, not finished. A second
+// request while one is running gets 409 with the running status rather than
+// silently queueing a duplicate pass over the same vault.
+func handleReindex(ix *indexer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !ix.start() {
+			writeJSON(w, http.StatusConflict, ix.snapshot())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, ix.snapshot())
+	}
+}
+
+func handleReindexStatus(ix *indexer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, ix.snapshot())
+	}
 }

@@ -11,8 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Zinoki12/rag-ai-system/internal/app"
-	"github.com/Zinoki12/rag-ai-system/internal/storage"
+	"github.com/Zinoki12/rag-ai-system/knowledge"
 )
 
 // blockingService reports when a request reaches it, waits to be released, and
@@ -22,20 +21,23 @@ type blockingService struct {
 	release chan struct{}
 }
 
-func (b *blockingService) Stats(context.Context) (storage.EmbeddingStats, error) {
-	return storage.EmbeddingStats{}, nil
-}
-func (b *blockingService) SpaceName() string { return "stub/test@4" }
-
-func (b *blockingService) Ask(context.Context, string, int) (app.Answer, error) {
-	return app.Answer{}, nil
+func (b *blockingService) Stats(context.Context) (knowledge.Stats, error) {
+	return knowledge.Stats{}, nil
 }
 
-func (b *blockingService) Search(ctx context.Context, _ string, _ int) ([]storage.Hit, error) {
+func (b *blockingService) Ask(context.Context, string, int) (knowledge.Answer, error) {
+	return knowledge.Answer{}, nil
+}
+
+func (b *blockingService) Index(context.Context) (knowledge.IndexResult, error) {
+	return knowledge.IndexResult{}, nil
+}
+
+func (b *blockingService) Search(ctx context.Context, _ string, _ int) ([]knowledge.Hit, error) {
 	close(b.started)
 	select {
 	case <-b.release:
-		return []storage.Hit{{ChunkID: 1, NotePath: "a.md", Text: "готово"}}, nil
+		return []knowledge.Hit{{Source: "a.md", Text: "готово"}}, nil
 	case <-ctx.Done():
 		// This is the failure the test is looking for: the handler was told to
 		// give up while the server was supposed to be draining it.
@@ -65,7 +67,7 @@ func TestGracefulShutdownLetsInFlightRequestFinish(t *testing.T) {
 	cfg := Config{RequestTimeout: 10 * time.Second, ShutdownGrace: 10 * time.Second}
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, ln, svc, log, cfg) }()
+	go func() { serveErr <- Serve(ctx, ln, svc, testSpace, log, cfg) }()
 
 	respCh := make(chan *http.Response, 1)
 	reqErr := make(chan error, 1)
@@ -129,7 +131,7 @@ func TestRunReportsListenFailure(t *testing.T) {
 	cfg := DefaultConfig
 	cfg.Addr = ln.Addr().String()
 
-	if err := Run(context.Background(), &stubService{}, log, cfg); err == nil {
+	if err := Run(context.Background(), &stubService{}, testSpace, log, cfg); err == nil {
 		t.Error("Run() on an occupied port returned no error")
 	}
 }

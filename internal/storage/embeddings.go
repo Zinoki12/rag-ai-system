@@ -8,7 +8,7 @@ import (
 
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/Zinoki12/rag-ai-system/internal/embed"
+	"github.com/Zinoki12/rag-ai-system/embed"
 )
 
 // Chunk is a stored piece of a note awaiting or carrying an embedding.
@@ -110,18 +110,47 @@ func (s *Store) SaveEmbeddings(ctx context.Context, ref SpaceRef, batch []ChunkV
 
 // EmbeddingStats reports how much of the corpus this space covers.
 type EmbeddingStats struct {
+	Notes    int
 	Chunks   int
 	Embedded int
 }
 
-// Stats counts chunks and how many of them have a vector in this space.
+// Stats counts notes, chunks, and how many chunks have a vector in this space.
 func (s *Store) Stats(ctx context.Context, ref SpaceRef) (EmbeddingStats, error) {
-	q := fmt.Sprintf(
-		"SELECT (SELECT count(*) FROM chunks), (SELECT count(*) FROM %s)", ref.Table())
+	q := fmt.Sprintf(`SELECT
+		(SELECT count(*) FROM notes),
+		(SELECT count(*) FROM chunks),
+		(SELECT count(*) FROM %s)`, ref.Table())
 
 	var st EmbeddingStats
-	if err := s.db.QueryRow(ctx, q).Scan(&st.Chunks, &st.Embedded); err != nil {
+	if err := s.db.QueryRow(ctx, q).Scan(&st.Notes, &st.Chunks, &st.Embedded); err != nil {
 		return EmbeddingStats{}, fmt.Errorf("stats for %s: %w", ref, err)
 	}
 	return st, nil
+}
+
+// DeleteMissingNotes removes notes whose file is no longer in the vault.
+//
+// Chunks and vectors go with them through ON DELETE CASCADE. Without this an
+// indexed note outlives the file it came from and keeps surfacing in search
+// results that cite a path nobody can open.
+//
+// An empty keep list is treated as "the scan found nothing", and nothing is
+// deleted. A mistyped VAULT_PATH scans an empty directory perfectly
+// successfully, and the difference between that and a genuinely emptied vault
+// is not visible from here — so the safe reading is the one that does not erase
+// the index. Emptying a vault on purpose means deleting the notes by hand.
+func (s *Store) DeleteMissingNotes(ctx context.Context, keepPaths []string) (int, error) {
+	if len(keepPaths) == 0 {
+		return 0, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := s.db.Exec(ctx, "DELETE FROM notes WHERE paths <> ALL($1)", keepPaths)
+	if err != nil {
+		return 0, fmt.Errorf("delete notes missing from the vault: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }

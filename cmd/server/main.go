@@ -1,8 +1,10 @@
 // Command server exposes the knowledge base over HTTP.
 //
-//	GET  /health   index coverage and the active embedding space
-//	POST /search   {"query": "...", "k": 5}      -> ranked chunks
-//	POST /ask      {"question": "...", "k": 5}   -> generated answer + sources
+//	GET  /health          index coverage and the active embedding space
+//	POST /search          {"query": "...", "k": 5}      -> ranked chunks
+//	POST /ask             {"question": "...", "k": 5}   -> answer + sources
+//	POST /reindex         start a background indexing pass -> 202
+//	GET  /reindex/status  progress of the last or current pass
 package main
 
 import (
@@ -13,9 +15,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Zinoki12/rag-ai-system/internal/app"
 	"github.com/Zinoki12/rag-ai-system/internal/config"
 	"github.com/Zinoki12/rag-ai-system/internal/httpapi"
+	"github.com/Zinoki12/rag-ai-system/knowledge"
 )
 
 func main() {
@@ -32,14 +34,20 @@ func run(ctx context.Context) error {
 	// second, unlike the ingest CLI whose stdout is its user interface.
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	a, err := app.Open(ctx, app.Options{WithLLM: true, Logger: logger})
+	cfg, err := knowledge.ConfigFromEnv()
 	if err != nil {
 		return err
 	}
-	defer a.Close()
+	cfg.Logger = logger
 
-	cfg := httpapi.DefaultConfig
-	cfg.Addr = config.String("HTTP_ADDR", cfg.Addr)
+	kb, err := knowledge.Open(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer kb.Close()
 
-	return httpapi.Run(ctx, a, logger, cfg)
+	httpCfg := httpapi.DefaultConfig
+	httpCfg.Addr = config.String("HTTP_ADDR", httpCfg.Addr)
+
+	return httpapi.Run(ctx, kb, kb.Space().String(), logger, httpCfg)
 }

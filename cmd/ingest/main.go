@@ -1,44 +1,26 @@
 // Command ingest builds the search index from a markdown vault.
 //
-// It runs two stages. The first walks the vault and writes notes and their
-// chunks, skipping files whose content hash is unchanged. The second fills in
-// embeddings for whatever chunks are missing one in the configured vector
-// space. The stages are deliberately independent: the second asks the database
-// what is missing rather than acting on what the first just wrote, so switching
-// embedding models recomputes everything without touching a single file, and an
-// interrupted run resumes where it stopped.
+// It is a thin wrapper: everything it does is one call to knowledge.Index. The
+// same call is what an application embedding this repository as a library
+// makes, and what POST /reindex runs in the background.
 package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/Zinoki12/rag-ai-system/internal/app"
-	"github.com/Zinoki12/rag-ai-system/internal/chunk"
-	"github.com/Zinoki12/rag-ai-system/internal/config"
-	"github.com/Zinoki12/rag-ai-system/internal/embed"
-	"github.com/Zinoki12/rag-ai-system/internal/storage"
-	"github.com/Zinoki12/rag-ai-system/internal/vault"
+	"github.com/Zinoki12/rag-ai-system/knowledge"
 )
-
-// chunkSize is in runes, not bytes and not the vector dimension. The two
-// numbers are unrelated and 800 is kept clear of 768 so they cannot be confused
-// for each other.
-const chunkSize = 800
-
-// pendingBatch is how many chunks are claimed from the database per round. The
-// provider splits this further according to its own batch limit.
-const pendingBatch = 128
 
 func main() {
 	// A cancellable context is what makes "resumable" true rather than
-	// aspirational: Ctrl+C stops the loop between batches, and everything
-	// already committed stays committed.
+	// aspirational: Ctrl+C stops between batches and everything already
+	// committed stays committed.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -48,114 +30,44 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	vaultPath, err := config.Required("VAULT_PATH")
+	cfg, err := knowledge.ConfigFromEnv()
 	if err != nil {
 		return err
 	}
+	if cfg.VaultPath == "" {
+		return fmt.Errorf("VAULT_PATH is not set")
+	}
+	// Indexing never generates text, so a missing or misconfigured
+	// LLM_PROVIDER must not be able to fail this command.
+	cfg.Generator = nil
+	cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	// No generation provider: indexing has no use for one, and requiring it
-	// would let a missing LLM_PROVIDER break a run that never calls a model.
-	a, err := app.Open(ctx, app.Options{WithLLM: false})
+	kb, err := knowledge.Open(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	defer a.Close()
+	defer kb.Close()
 
-	if err := ingestNotes(ctx, a.Store, vaultPath); err != nil {
-		return err
-	}
-	return embedPending(ctx, a)
-}
-
-// ingestNotes writes every markdown file in the vault as a note plus its chunks.
-func ingestNotes(ctx context.Context, store *storage.Store, vaultPath string) error {
-	files, err := vault.Scan(vaultPath)
-	if err != nil {
-		// Scan reports two different things through one error: files it had to
-		// skip, and a failure that stopped the walk. Only the second is fatal.
-		if !errors.Is(err, vault.ErrUnclosedFrontmatter) {
-			return fmt.Errorf("scan vault %s: %w", vaultPath, err)
-		}
-		log.Printf("пропущены файлы с битым фронтматтером:\n%v", err)
-	}
-
-	var (
-		written, skipped int
-		noteErrs         []error
-	)
-	for _, file := range files {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		id, ok, err := store.SaveNoteWithChunks(ctx, file, func() ([]string, error) {
-			return chunk.Cut(file.Text, chunkSize)
-		})
-		if err != nil {
-			// One unwritable note must not cost the whole run. The failures are
-			// collected and reported at the end so the exit code still says the
-			// run was not clean.
-			noteErrs = append(noteErrs, fmt.Errorf("note %s: %w", file.Path, err))
-			continue
-		}
-
-		if ok {
-			written++
-			fmt.Printf("записана заметка [%s], id %d\n", file.Path, id)
-		} else {
-			skipped++
-		}
-	}
-
-	fmt.Printf("\nЗаметки: записано %d, без изменений %d, с ошибками %d\n", written, skipped, len(noteErrs))
-	return errors.Join(noteErrs...)
-}
-
-// embedPending fills in vectors for chunks that do not have one yet.
-func embedPending(ctx context.Context, a *app.App) error {
-	before, err := a.Store.Stats(ctx, a.Space)
+	before, err := kb.Stats(ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nПространство %s: %d чанков, векторов уже есть %d\n",
-		a.Space.Space, before.Chunks, before.Embedded)
+	fmt.Printf("Пространство %s: заметок %d, чанков %d, векторов %d\n",
+		before.Space, before.Notes, before.Chunks, before.Embedded)
 
-	done := 0
-	for {
-		pending, err := a.Store.PendingChunks(ctx, a.Space, pendingBatch)
-		if err != nil {
-			return err
-		}
-		if len(pending) == 0 {
-			break
-		}
+	res, indexErr := kb.Index(ctx)
 
-		texts := make([]string, len(pending))
-		for i, c := range pending {
-			texts[i] = c.Text
-		}
+	fmt.Printf("\nЗаметки: записано %d, без изменений %d, удалено %d, с ошибками %d\n",
+		res.NotesWritten, res.NotesUnchanged, res.NotesDeleted, res.NotesFailed)
+	fmt.Printf("Векторов посчитано: %d\n", res.ChunksEmbedded)
 
-		vectors, err := embed.Batched(ctx, a.Embed, texts, embed.KindDocument)
-		if err != nil {
-			return fmt.Errorf("embed %d chunks: %w", len(texts), err)
-		}
-
-		batch := make([]storage.ChunkVector, len(pending))
-		for i, c := range pending {
-			batch[i] = storage.ChunkVector{ChunkID: c.ID, Vector: vectors[i]}
-		}
-		if err := a.Store.SaveEmbeddings(ctx, a.Space, batch); err != nil {
-			return err
-		}
-
-		done += len(pending)
-		fmt.Printf("векторов посчитано %d из %d\n", before.Embedded+done, before.Chunks)
-	}
-
-	after, err := a.Store.Stats(ctx, a.Space)
+	after, err := kb.Stats(ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nИтог: %d чанков, %d векторов в пространстве %s\n", after.Chunks, after.Embedded, a.Space.Space)
-	return nil
+	fmt.Printf("\nИтог: заметок %d, чанков %d, векторов %d в пространстве %s\n",
+		after.Notes, after.Chunks, after.Embedded, after.Space)
+
+	// Reported last so partial failures are visible but do not hide the counts.
+	return indexErr
 }

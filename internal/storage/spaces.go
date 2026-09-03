@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Zinoki12/rag-ai-system/internal/embed"
+	"github.com/Zinoki12/rag-ai-system/embed"
 )
 
 // SpaceRef is a registered embedding space together with the physical table

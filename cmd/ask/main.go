@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -14,7 +15,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Zinoki12/rag-ai-system/internal/app"
+	"github.com/Zinoki12/rag-ai-system/knowledge"
 )
 
 func main() {
@@ -38,23 +39,32 @@ func run(ctx context.Context) error {
 	question := strings.TrimSpace(strings.Join(flag.Args(), " "))
 	if question == "" {
 		flag.Usage()
-		return fmt.Errorf("не задан вопрос")
+		return errors.New("не задан вопрос")
 	}
 
-	a, err := app.Open(ctx, app.Options{WithLLM: !*searchOnly})
+	cfg, err := knowledge.ConfigFromEnv()
 	if err != nil {
 		return err
 	}
-	defer a.Close()
+	if *searchOnly {
+		// Nil generator: searching must not fail on a misconfigured model.
+		cfg.Generator = nil
+	}
+
+	kb, err := knowledge.Open(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer kb.Close()
 
 	if *searchOnly {
-		return printSearch(ctx, a, question, *topK)
+		return printSearch(ctx, kb, question, *topK)
 	}
-	return printAnswer(ctx, a, question, *topK)
+	return printAnswer(ctx, kb, question, *topK)
 }
 
-func printSearch(ctx context.Context, a *app.App, question string, topK int) error {
-	hits, err := a.Search(ctx, question, topK)
+func printSearch(ctx context.Context, kb *knowledge.Knowledge, question string, topK int) error {
+	hits, err := kb.Search(ctx, question, topK)
 	if err != nil {
 		return err
 	}
@@ -63,31 +73,30 @@ func printSearch(ctx context.Context, a *app.App, question string, topK int) err
 		return nil
 	}
 
-	fmt.Printf("Пространство: %s\n\n", a.Space.Space)
+	fmt.Printf("Пространство: %s\n\n", kb.Space())
 	for i, h := range hits {
-		title := h.NoteName
+		title := h.Title
 		if title == "" {
 			title = "(без заголовка)"
 		}
-		fmt.Printf("%d. [%.3f] %s — %s #%d\n", i+1, h.Score, title, h.NotePath, h.ChunkIndex)
+		fmt.Printf("%d. [%.3f] %s — %s #%d\n", i+1, h.Score, title, h.Source, h.Index)
 		fmt.Printf("   %s\n\n", preview(h.Text, 240))
 	}
 	return nil
 }
 
-func printAnswer(ctx context.Context, a *app.App, question string, topK int) error {
-	answer, err := a.Ask(ctx, question, topK)
+func printAnswer(ctx context.Context, kb *knowledge.Knowledge, question string, topK int) error {
+	answer, err := kb.Ask(ctx, question, topK)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println(answer.Text)
 
-	// "Показано модели", not "Источники": these are the fragments that were
-	// retrieved and put in the prompt. Whether the answer actually rests on
-	// them is not something this program knows, and calling them sources when
-	// the model just said the base has no answer would be a claim it cannot
-	// support.
+	// "Показано модели", not "Источники": these are the fragments that went
+	// into the prompt. Whether the answer rests on them is not something this
+	// program knows, and calling them sources when the model has just said the
+	// base has no answer would be a claim it cannot support.
 	if len(answer.Sources) > 0 {
 		fmt.Println("\nПоказано модели:")
 		for _, s := range answer.Sources {
@@ -95,7 +104,7 @@ func printAnswer(ctx context.Context, a *app.App, question string, topK int) err
 		}
 	}
 	fmt.Printf("\n(модель: %s, пространство: %s, фрагментов: %d, лучшая близость: %.3f)\n",
-		answer.Model, a.Space.Space, len(answer.Passages), answer.TopScore)
+		answer.Model, kb.Space(), len(answer.Hits), answer.TopScore)
 	return nil
 }
 

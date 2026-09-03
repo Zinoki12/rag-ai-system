@@ -6,7 +6,7 @@ import (
 
 	"github.com/pgvector/pgvector-go"
 
-	"github.com/Zinoki12/rag-ai-system/internal/embed"
+	"github.com/Zinoki12/rag-ai-system/embed"
 )
 
 // Hit is one retrieved chunk with the note it came from.

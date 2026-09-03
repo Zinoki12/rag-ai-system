@@ -9,32 +9,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/Zinoki12/rag-ai-system/internal/app"
-	"github.com/Zinoki12/rag-ai-system/internal/rag"
-	"github.com/Zinoki12/rag-ai-system/internal/storage"
+	"github.com/Zinoki12/rag-ai-system/knowledge"
 )
 
 // stubService stands in for the whole application stack.
 type stubService struct {
-	hits    []storage.Hit
-	answer  app.Answer
-	stats   storage.EmbeddingStats
-	err     error
-	lastK   int
-	lastQ   string
-	panicOn string // path prefix that should panic
+	hits      []knowledge.Hit
+	answer    knowledge.Answer
+	stats     knowledge.Stats
+	indexRes  knowledge.IndexResult
+	err       error
+	indexErr  error
+	lastK     int
+	lastQ     string
+	panicOn   string        // path prefix that should panic
+	indexHold chan struct{} // when set, Index blocks until closed
+	indexRuns atomic.Int32
 }
 
-func (s *stubService) Stats(context.Context) (storage.EmbeddingStats, error) {
+func (s *stubService) Stats(context.Context) (knowledge.Stats, error) {
 	return s.stats, s.err
 }
 
-func (s *stubService) SpaceName() string { return "stub/test@4" }
-
-func (s *stubService) Search(_ context.Context, query string, topK int) ([]storage.Hit, error) {
+func (s *stubService) Search(_ context.Context, query string, topK int) ([]knowledge.Hit, error) {
 	s.lastQ, s.lastK = query, topK
 	if s.panicOn == "search" {
 		panic("boom")
@@ -42,14 +43,24 @@ func (s *stubService) Search(_ context.Context, query string, topK int) ([]stora
 	return s.hits, s.err
 }
 
-func (s *stubService) Ask(_ context.Context, question string, topK int) (app.Answer, error) {
+func (s *stubService) Ask(_ context.Context, question string, topK int) (knowledge.Answer, error) {
 	s.lastQ, s.lastK = question, topK
 	return s.answer, s.err
 }
 
+func (s *stubService) Index(context.Context) (knowledge.IndexResult, error) {
+	s.indexRuns.Add(1)
+	if s.indexHold != nil {
+		<-s.indexHold
+	}
+	return s.indexRes, s.indexErr
+}
+
+const testSpace = "stub/test@4"
+
 func newTestHandler(svc Service) http.Handler {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return Handler(svc, log, Config{RequestTimeout: 5 * time.Second})
+	return Handler(context.Background(), svc, testSpace, log, Config{RequestTimeout: 5 * time.Second})
 }
 
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -67,7 +78,7 @@ func do(t *testing.T, h http.Handler, method, path, body string) *httptest.Respo
 
 func TestHealth(t *testing.T) {
 	t.Run("здоровый сервис отдаёт покрытие индекса", func(t *testing.T) {
-		svc := &stubService{stats: storage.EmbeddingStats{Chunks: 16, Embedded: 16}}
+		svc := &stubService{stats: knowledge.Stats{Notes: 5, Chunks: 16, Embedded: 16}}
 		w := do(t, newTestHandler(svc), http.MethodGet, "/health", "")
 
 		if w.Code != http.StatusOK {
@@ -77,8 +88,8 @@ func TestHealth(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if got.Chunks != 16 || got.Vector != 16 || got.Space != "stub/test@4" {
-			t.Errorf("body = %+v, want 16/16 in stub/test@4", got)
+		if got.Notes != 5 || got.Chunks != 16 || got.Vectors != 16 {
+			t.Errorf("body = %+v, want 5 notes and 16/16 chunks", got)
 		}
 	})
 
@@ -113,7 +124,7 @@ func TestSearchValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := &stubService{hits: []storage.Hit{{ChunkID: 1, Text: "t", NotePath: "a.md", Score: 0.5}}}
+			svc := &stubService{hits: []knowledge.Hit{{Text: "t", Source: "a.md", Score: 0.5}}}
 			w := do(t, newTestHandler(svc), tt.method, "/search", tt.body)
 
 			if w.Code != tt.wantStatus {
@@ -175,13 +186,11 @@ func TestUpstreamErrorIsNotLeakedToClient(t *testing.T) {
 
 func TestAsk(t *testing.T) {
 	t.Run("успешный ответ несёт источники и модель", func(t *testing.T) {
-		svc := &stubService{answer: app.Answer{
+		svc := &stubService{answer: knowledge.Answer{
 			Text:    "Чанкинг — это разрезание документа.",
 			Model:   "llama3.2",
 			Sources: []string{"rag/chunking.md"},
-			Passages: []rag.Passage{
-				{Source: "rag/chunking.md", Index: 0, Text: "..."},
-			},
+			Hits:    []knowledge.Hit{{Source: "rag/chunking.md", Index: 0, Text: "..."}},
 		}}
 		w := do(t, newTestHandler(svc), http.MethodPost, "/ask", `{"question":"что такое чанкинг"}`)
 

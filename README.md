@@ -6,26 +6,31 @@ Postgres + pgvector хранит индекс, эмбеддинги и гене�
 
 ## Как это устроено
 
-Две команды, два пайплайна; всё остальное — библиотека под них.
+Это **библиотека** (как `net/http`: вы её вызываете, она вас не вызывает), плюс
+три бинаря — тонкие обёртки над ней.
 
-```
-cmd/ingest   vault/*.md → notes → chunks → векторы        (офлайн, индексация)
-cmd/ask      вопрос → вектор → поиск → промпт → ответ      (онлайн, CLI)
-cmd/server   то же самое по HTTP
+```go
+kb, err := knowledge.Open(ctx, knowledge.Config{...})
+defer kb.Close()
+
+kb.Index(ctx)                  // vault/*.md → notes → chunks → векторы
+kb.Search(ctx, "вопрос", 5)    // вопрос → вектор → top-k
+kb.Ask(ctx, "вопрос", 5)       // + промпт → ответ со ссылками на источники
 ```
 
-| Пакет | Ответственность |
+Подробности и примеры — [docs/usage.md](docs/usage.md).
+
+| Публичный пакет | Что это |
 |---|---|
-| `internal/vault` | обход каталога, парсинг frontmatter, sha256 |
-| `internal/chunk` | нарезка текста по абзацам |
-| `internal/storage` | Postgres: заметки, чанки, пространства эмбеддингов, поиск |
-| `internal/embed` | **коннектор эмбеддингов**: интерфейс + google/ollama/fake |
-| `internal/llm` | **коннектор генерации**: интерфейс + google/ollama/stub |
-| `internal/backoff` | общая политика ретраев для обоих коннекторов |
-| `internal/rag` | сборка промпта, без зависимостей от БД и провайдеров |
-| `internal/app` | сборка всего вместе + пайплайны Search/Ask |
-| `internal/httpapi` | HTTP-слой |
-| `internal/migrate` | схема БД (goose, миграции вшиты в бинарь) |
+| `knowledge` | вся система: `Open`, `Index`, `Search`, `Ask`, `Stats` |
+| `embed` | **коннектор эмбеддингов**: `Provider` + google/ollama/fake, ретраи, лимитер |
+| `llm` | **коннектор генерации**: `Provider` + google/ollama/stub |
+| `rag` | сборка промпта, без зависимостей от БД и провайдеров |
+| `backoff` | политика ретраев, общая для обоих коннекторов |
+
+Под `internal/` — детали реализации, не контракт: `vault` (обход каталога и
+frontmatter), `chunk` (нарезка по абзацам), `storage` (Postgres), `migrate`
+(goose, миграции вшиты в бинарь), `httpapi`, `config`.
 
 ### Пространства эмбеддингов
 
@@ -91,6 +96,8 @@ go run ./cmd/server
 curl -s localhost:8081/health
 curl -s -XPOST localhost:8081/search -d '{"query":"чанкинг","k":5}'
 curl -s -XPOST localhost:8081/ask    -d '{"question":"как устроен чанкинг"}'
+curl -s -XPOST localhost:8081/reindex          # 202, индексация в фоне
+curl -s localhost:8081/reindex/status
 ```
 
 ## Проверки
