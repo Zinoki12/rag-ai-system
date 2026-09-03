@@ -7,10 +7,14 @@ services:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
       POSTGRES_DB: "${POSTGRES_DB}"
     ports:
+      # 5432 on the host is taken by a native Homebrew postgresql@14.
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql
-      - ./postgres/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      # No docker-entrypoint-initdb.d mount on purpose: it only ever runs on an
+      # empty volume, which made postgres/schema.sql a lie on any database that
+      # already had data. The schema now lives in internal/migrate/migrations
+      # and is applied by the application at startup.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
@@ -18,5 +22,22 @@ services:
       retries: 5
       start_period: 30s
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-dev
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      # `ollama list` talks to the server over its own HTTP API, so this checks
+      # the thing clients actually depend on, not just that the process exists.
+      test: ["CMD-SHELL", "ollama list > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 volumes:
   pgdata:
+  ollama:
