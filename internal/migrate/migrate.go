@@ -6,14 +6,21 @@
 // schema change meant either hand-written ALTERs in psql or destroying the
 // volume. The migrations here are embedded in the binary and applied at startup,
 // so the schema a build expects always travels with that build.
+//
+// Everything here goes through goose's instance API (goose.NewProvider) and
+// never through its package-level functions. That is not a style preference.
+// goose.SetTableName, goose.SetBaseFS, goose.SetDialect and goose.SetLogger all
+// write to package variables shared by every caller in the process, so a
+// library that used them would silently take over — or be taken over by — the
+// migrations of the program that imported it. See VersionTable.
 package migrate
 
 import (
 	"context"
 	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,26 +31,23 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// VersionTable is where this package records which of its migrations have run.
+//
+// Not goose's default "goose_db_version": the host program may run its own
+// goose migrations against the same database, and sharing one version table
+// means each set of migrations reads the other's version number as its own. The
+// failure is silent and total — goose sees "version 3" written by someone else,
+// concludes its own 1..3 are applied, runs nothing, and reports success. The
+// missing tables then surface much later as an unrelated-looking error.
+//
+// A separate table costs nothing and makes the two histories independent.
+const VersionTable = "rag_db_version"
+
 // advisoryLockID guards the migration run. Every command in this project
 // migrates on startup, so two of them racing at boot is normal rather than
 // exotic; without the lock both would try to apply the same migration and one
 // would fail on a duplicate object. The value is arbitrary but must be stable.
 const advisoryLockID int64 = 0x7261676169 // "ragai" in ASCII
-
-// gooseLogger adapts goose's Printf/Fatalf logger to slog, so migration output
-// lands in the same stream and format as everything else the process logs
-// rather than as stray plain text among JSON lines.
-type gooseLogger struct{ log *slog.Logger }
-
-func (g gooseLogger) Printf(format string, v ...any) {
-	g.log.Info(strings.TrimSpace(fmt.Sprintf(format, v...)))
-}
-
-// Fatalf must not exit the process: goose calls it on errors that Up already
-// returns, and killing the program here would skip every deferred cleanup.
-func (g gooseLogger) Fatalf(format string, v ...any) {
-	g.log.Error(strings.TrimSpace(fmt.Sprintf(format, v...)))
-}
 
 // Up applies every pending migration. It is safe to call concurrently from
 // several processes: the second one blocks on the advisory lock and then finds
@@ -78,15 +82,29 @@ func Up(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
 
-	goose.SetBaseFS(migrationsFS)
-	if log != nil {
-		goose.SetLogger(gooseLogger{log: log})
-	}
-	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("set goose dialect: %w", err)
+	// goose reads migrations from the root of the FS it is given, so hand it
+	// the subdirectory rather than the whole embedded tree.
+	sub, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("open embedded migrations: %w", err)
 	}
 
-	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
+	opts := []goose.ProviderOption{
+		goose.WithTableName(VersionTable),
+		// Go migrations registered by the host program through goose's global
+		// registry are not ours to run.
+		goose.WithDisableGlobalRegistry(true),
+	}
+	if log != nil {
+		opts = append(opts, goose.WithSlog(log))
+	}
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, sub, opts...)
+	if err != nil {
+		return fmt.Errorf("configure migrations: %w", err)
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 	return nil

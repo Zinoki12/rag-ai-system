@@ -15,6 +15,18 @@ type Config struct {
 	Addr           string
 	RequestTimeout time.Duration
 	ShutdownGrace  time.Duration
+
+	// AuthToken, when set, is required on every request except GET /health,
+	// as "Authorization: Bearer <token>". Empty means no authentication, which
+	// Serve permits only on a loopback address.
+	AuthToken string
+
+	// AllowUnauthenticated lifts that restriction, for the case where
+	// something in front of this server already authenticates callers. Setting
+	// it while nothing does means publishing the knowledge base, and an
+	// endpoint that spends money on an upstream model, to whoever can reach
+	// the port.
+	AllowUnauthenticated bool
 }
 
 // DefaultConfig is the configuration used when nothing is overridden.
@@ -47,6 +59,9 @@ func Handler(ctx context.Context, a Service, space string, log *slog.Logger, cfg
 	mux.HandleFunc("GET /reindex/status", handleReindexStatus(ix))
 
 	var h http.Handler = mux
+	// Inside the logging and request-id layers, so a rejected request still
+	// produces a log line with an id to correlate.
+	h = withAuth(cfg.AuthToken, h)
 	h = withTimeout(cfg.RequestTimeout, h)
 	h = withLogging(log, h)
 	h = withRecover(log, h)
@@ -69,6 +84,19 @@ func Run(ctx context.Context, a Service, space string, log *slog.Logger, cfg Con
 // send a request; shutdown behaviour is exactly the kind of thing that has to
 // be exercised against a real socket to mean anything.
 func Serve(ctx context.Context, ln net.Listener, a Service, space string, log *slog.Logger, cfg Config) error {
+	// Refuse to serve the knowledge base to the network with no credential at
+	// all. This used to be a line in the documentation saying authentication
+	// was not implemented, which is not a control: the notes here are a
+	// customer's, /search and /ask return their text, and /reindex spends money
+	// on an upstream model. A documented hole is still a hole, so the check
+	// lives where the socket is, and says exactly how to proceed.
+	if cfg.AuthToken == "" && !cfg.AllowUnauthenticated && reachableFromNetwork(ln.Addr()) {
+		return fmt.Errorf(
+			"refusing to serve %s without authentication: set Config.AuthToken, "+
+				"bind to 127.0.0.1, or set Config.AllowUnauthenticated if something in front of "+
+				"this server authenticates callers", ln.Addr())
+	}
+
 	srv := &http.Server{
 		// The signal context, not a detached one: a background indexing pass
 		// should stop when the server is shutting down. It is resumable by
@@ -97,7 +125,10 @@ func Serve(ctx context.Context, ln net.Listener, a Service, space string, log *s
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("listening", slog.String("addr", ln.Addr().String()), slog.String("space", space))
+		log.Info("listening",
+			slog.String("addr", ln.Addr().String()),
+			slog.String("space", space),
+			slog.Bool("authenticated", cfg.AuthToken != ""))
 		// ErrServerClosed is what Shutdown causes; it is the success path here.
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("serve on %s: %w", ln.Addr(), err)

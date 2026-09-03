@@ -2,3 +2,5 @@ memory.md
 .env
 /vault/
 CLAUDE.md
+# macOS
+.DS_Store

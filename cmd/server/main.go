@@ -5,6 +5,11 @@
 //	POST /ask             {"question": "...", "k": 5}   -> answer + sources
 //	POST /reindex         start a background indexing pass -> 202
 //	GET  /reindex/status  progress of the last or current pass
+//
+// Set RAG_API_TOKEN to require "Authorization: Bearer <token>" on everything
+// except /health. Without it the server refuses to bind anywhere but loopback,
+// because /search and /ask hand out the contents of the knowledge base and
+// /reindex spends money on the embedding provider.
 package main
 
 import (
@@ -48,6 +53,13 @@ func run(ctx context.Context) error {
 
 	httpCfg := httpapi.DefaultConfig
 	httpCfg.Addr = config.String("HTTP_ADDR", httpCfg.Addr)
+	httpCfg.AuthToken = config.String("RAG_API_TOKEN", "")
+
+	allowOpen, err := config.Bool("RAG_ALLOW_UNAUTHENTICATED", false)
+	if err != nil {
+		return err
+	}
+	httpCfg.AllowUnauthenticated = allowOpen
 
 	return httpapi.Run(ctx, kb, kb.Space().String(), logger, httpCfg)
 }

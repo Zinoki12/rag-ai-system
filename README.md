@@ -30,7 +30,8 @@ kb.Ask(ctx, "вопрос", 5)       // + промпт → ответ со сс�
 
 Под `internal/` — детали реализации, не контракт: `vault` (обход каталога и
 frontmatter), `chunk` (нарезка по абзацам), `storage` (Postgres), `migrate`
-(goose, миграции вшиты в бинарь), `httpapi`, `config`.
+(goose, миграции вшиты в бинарь, своя таблица версий `rag_db_version`),
+`httpapi`, `config`, `testdb` (одноразовая база для интеграционных тестов).
 
 ### Пространства эмбеддингов
 
@@ -92,7 +93,7 @@ LLM_PROVIDER=ollama LLM_MODEL=llama3.2 go run ./cmd/ask "как устроен �
 HTTP:
 
 ```bash
-go run ./cmd/server
+go run ./cmd/server                            # HTTP_ADDR=127.0.0.1:8081
 curl -s localhost:8081/health
 curl -s -XPOST localhost:8081/search -d '{"query":"чанкинг","k":5}'
 curl -s -XPOST localhost:8081/ask    -d '{"question":"как устроен чанкинг"}'
@@ -100,14 +101,32 @@ curl -s -XPOST localhost:8081/reindex          # 202, индексация в ф
 curl -s localhost:8081/reindex/status
 ```
 
+Наружу — только с токеном. `RAG_API_TOKEN` включает `Authorization: Bearer` на
+всём, кроме `GET /health`; без него сервер откажется слушать не-loopback адрес,
+потому что `/search` и `/ask` отдают содержимое заметок, а `/reindex` тратит
+деньги на облачном эмбеддере. Подробности — в [docs/usage.md](docs/usage.md).
+
 ## Проверки
 
 ```bash
 go build ./... && go vet ./... && go test -race ./...
 ```
 
-Тесты не требуют ни сети, ни ключей: провайдеры `fake` и `stub` закрывают весь
-путь офлайн, HTTP-слой тестируется через подставной `Service`.
+Эти тесты не требуют ни сети, ни ключей, ни базы: провайдеры `fake` и `stub`
+закрывают весь путь офлайн, HTTP-слой тестируется через подставной `Service`,
+а тесты, которым нужен Postgres, пропускаются.
+
+Включить их — задать DSN. Тест создаёт себе **отдельную одноразовую базу** на
+каждый прогон и удаляет её после, база из DSN не трогается:
+
+```bash
+RAG_TEST_DSN='postgres://user:pass@127.0.0.1:5433/ragdb?sslmode=disable' \
+  go test -race ./...
+```
+
+Ими покрыто ровно то, что является SQL, а не Go: динамический DDL пространств,
+`LEFT JOIN`, находящий непосчитанные чанки, CASCADE, уносящий векторы вместе с
+удалённой заметкой, и совместимость миграций с чужим goose в том же процессе.
 
 ## Схема БД
 

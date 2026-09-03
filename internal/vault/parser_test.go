@@ -40,16 +40,24 @@ title: Введение в pgvector
 			wantErr:   nil,
 		},
 		{
-			name: "Пустые строки перед открывающим ---",
+			// Not frontmatter: in Obsidian, Jekyll and Hugo the opening --- has
+			// to be the first line of the file. A --- after blank lines is a
+			// horizontal rule, so the whole block is body text and the note has
+			// no title. An earlier version of this test asserted the opposite
+			// and blessed the parser's behaviour instead of the format's.
+			name: "Пустые строки перед открывающим --- : это не фронтматтер",
 			input: `
 
 ---
-title: С отступом
+title: Это горизонтальная черта, а не заголовок
 ---
 Тело заметки`,
-			wantTitle: "С отступом",
-			wantBody:  "Тело заметки",
-			wantErr:   nil,
+			wantTitle: "",
+			wantBody: `---
+title: Это горизонтальная черта, а не заголовок
+---
+Тело заметки`,
+			wantErr: nil,
 		},
 		{
 			name: "Кавычки и двоеточия в заголовке",

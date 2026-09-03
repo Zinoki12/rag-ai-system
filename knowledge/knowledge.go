@@ -202,6 +202,7 @@ type IndexResult struct {
 	NotesWritten   int `json:"notes_written"`   // content changed, or new
 	NotesUnchanged int `json:"notes_unchanged"` // file hash matched, nothing rewritten
 	NotesDeleted   int `json:"notes_deleted"`   // file gone from the vault
+	NotesSkipped   int `json:"notes_skipped"`   // file unparseable; left in the index as it was
 	NotesFailed    int `json:"notes_failed"`    // could not be stored; see the returned error
 	ChunksEmbedded int `json:"chunks_embedded"`
 }
@@ -218,6 +219,11 @@ type IndexResult struct {
 // the failures come back in the error, so a caller can log them and still have
 // a usable index. A returned error therefore does not mean nothing happened;
 // check IndexResult too.
+//
+// Notes whose file has disappeared from the vault are removed along with their
+// chunks and vectors. A file that is present but cannot be parsed is not a
+// disappearance: it keeps whatever it had in the index, and is counted in
+// IndexResult.NotesSkipped.
 func (k *Knowledge) Index(ctx context.Context) (IndexResult, error) {
 	var res IndexResult
 
@@ -225,7 +231,7 @@ func (k *Knowledge) Index(ctx context.Context) (IndexResult, error) {
 		return res, errors.New("knowledge: Index needs Config.VaultPath")
 	}
 
-	files, err := vault.Scan(k.cfg.VaultPath)
+	scan, err := vault.Scan(k.cfg.VaultPath)
 	if err != nil {
 		// Scan reports two different things through one error: files it had to
 		// skip, and a failure that stopped the walk. Only the second is fatal.
@@ -234,11 +240,21 @@ func (k *Knowledge) Index(ctx context.Context) (IndexResult, error) {
 		}
 		k.log.Warn("skipped files with malformed frontmatter", slog.String("detail", err.Error()))
 	}
+	res.NotesSkipped = len(scan.Skipped)
 
 	var noteErrs []error
-	paths := make([]string, 0, len(files))
+	paths := make([]string, 0, len(scan.Notes)+len(scan.Skipped))
 
-	for _, file := range files {
+	// A file that could not be parsed still exists, so it counts as present for
+	// the prune below. Otherwise a stray edit to the frontmatter — deleting the
+	// closing --- is the likeliest one — would drop the note, its chunks and its
+	// vectors while the file sat untouched in the vault, and Index would report
+	// no error at all. Keeping the previously indexed version is strictly better
+	// than deleting it: the text on disk has not gone anywhere, and the next
+	// clean scan overwrites it.
+	paths = append(paths, scan.Skipped...)
+
+	for _, file := range scan.Notes {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}

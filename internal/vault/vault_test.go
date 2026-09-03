@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -40,10 +41,11 @@ func TestScan(t *testing.T) {
 		"nested/README":        "без расширения",
 	})
 
-	files, err := Scan(root)
+	scan, err := Scan(root)
 	if err != nil {
 		t.Fatalf("Scan() unexpected error: %v", err)
 	}
+	files := scan.Notes
 
 	if want := 4; len(files) != want {
 		paths := make([]string, len(files))
@@ -88,10 +90,11 @@ func TestScanTitleAndBody(t *testing.T) {
 		"a.md": "---\ntitle: Заголовок\n---\nПервый абзац.\n\nВторой абзац.",
 	})
 
-	files, err := Scan(root)
+	scan, err := Scan(root)
 	if err != nil {
 		t.Fatalf("Scan(): %v", err)
 	}
+	files := scan.Notes
 	if len(files) != 1 {
 		t.Fatalf("got %d files, want 1", len(files))
 	}
@@ -112,25 +115,34 @@ func TestScanReportsBadFrontmatterAsWarning(t *testing.T) {
 		"broken.md": "---\ntitle: Незакрытая\nникакого закрывающего разделителя",
 	})
 
-	files, err := Scan(root)
+	scan, err := Scan(root)
 	if err == nil {
 		t.Fatal("Scan() reported no warning for unterminated frontmatter")
 	}
 	if !errors.Is(err, ErrUnclosedFrontmatter) {
 		t.Fatalf("Scan() error = %v, want it to wrap ErrUnclosedFrontmatter", err)
 	}
-	if len(files) != 1 {
-		t.Errorf("got %d files, want the one good note to survive", len(files))
+	if len(scan.Notes) != 1 {
+		t.Errorf("got %d notes, want the one good note to survive", len(scan.Notes))
+	}
+
+	// The skipped file must be named, not merely counted. A caller that prunes
+	// the index against the scan needs to know this path is still on disk;
+	// without it the broken note is indistinguishable from a deleted one and
+	// gets erased from the index along with its vectors.
+	want := []string{"broken.md"}
+	if !slices.Equal(scan.Skipped, want) {
+		t.Errorf("Skipped = %v, want %v", scan.Skipped, want)
 	}
 }
 
 func TestScanEmptyVault(t *testing.T) {
-	files, err := Scan(t.TempDir())
+	scan, err := Scan(t.TempDir())
 	if err != nil {
 		t.Fatalf("Scan() on an empty directory: %v", err)
 	}
-	if len(files) != 0 {
-		t.Errorf("got %d files, want 0", len(files))
+	if len(scan.Notes) != 0 {
+		t.Errorf("got %d notes, want 0", len(scan.Notes))
 	}
 }
 

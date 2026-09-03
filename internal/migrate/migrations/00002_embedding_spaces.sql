@@ -12,8 +12,22 @@ ALTER TABLE chunks ALTER COLUMN chunk_text  SET NOT NULL;
 -- (note_id, chunk_index) can serve any query with a note_id predicate because
 -- note_id is the leading column. A separate index on note_id alone would be
 -- redundant write amplification.
-ALTER TABLE chunks ADD CONSTRAINT chunks_note_id_chunk_index_key
-    UNIQUE (note_id, chunk_index);
+--
+-- Guarded rather than a bare ADD CONSTRAINT so this migration can be replayed
+-- on a database that already has it. Replay is a real case: the version table
+-- moved from goose_db_version to rag_db_version (see migrate.VersionTable), so
+-- an existing installation re-runs 00001 and 00002 once against a schema that
+-- already matches. Every other statement in this file is already a no-op the
+-- second time; this one was the exception.
+-- +goose StatementBegin
+DO $$
+BEGIN
+    ALTER TABLE chunks ADD CONSTRAINT chunks_note_id_chunk_index_key
+        UNIQUE (note_id, chunk_index);
+EXCEPTION
+    WHEN duplicate_table OR duplicate_object THEN NULL;
+END $$;
+-- +goose StatementEnd
 
 -- 2. A long YAML `title` currently fails the insert with a value-too-long error.
 -- There is no reason to cap it: TEXT and VARCHAR(n) are the same storage in

@@ -36,13 +36,20 @@ func (s *Store) Search(ctx context.Context, ref SpaceRef, v embed.Vector, topK i
 	// `<=>` is cosine distance in pgvector: 0 for identical direction, 2 for
 	// opposite. Subtracting from 1 turns it back into the similarity people
 	// expect to read. ORDER BY uses the raw distance so the hnsw index applies.
+	//
+	// c.id breaks ties. Duplicate passages — the same boilerplate in two notes —
+	// embed to the same vector and land at the same distance, and one sort key
+	// leaves their order to whatever the executor happened to produce, so the
+	// same query can return different results on consecutive runs. The second
+	// key costs nothing: the planner keeps the hnsw index scan and puts an
+	// incremental sort over it, since the distance is still the presorted key.
 	q := fmt.Sprintf(`
 		SELECT c.id, c.chunk_index, c.chunk_text, n.paths, n.name,
 		       1 - (e.embedding <=> $1) AS score
 		FROM %s e
 		JOIN chunks c ON c.id = e.chunk_id
 		JOIN notes  n ON n.id = c.note_id
-		ORDER BY e.embedding <=> $1
+		ORDER BY e.embedding <=> $1, c.id
 		LIMIT $2`, ref.Table())
 
 	rows, err := s.db.Query(ctx, q, pgvector.NewVector(v), topK)

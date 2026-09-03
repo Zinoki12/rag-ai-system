@@ -79,9 +79,27 @@ func (s *Store) SaveEmbeddings(ctx context.Context, ref SpaceRef, batch []ChunkV
 		return nil
 	}
 
+	q, args, err := buildEmbeddingInsert(ref, batch)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
+	if _, err := s.db.Exec(ctx, q, args...); err != nil {
+		return fmt.Errorf("save %d embeddings for %s: %w", len(batch), ref, err)
+	}
+	return nil
+}
+
+// buildEmbeddingInsert assembles the multi-row INSERT and its arguments.
+//
+// Split out from SaveEmbeddings so the one piece of hand-written SQL assembly
+// in this package can be tested without a database: placeholder numbering that
+// drifts by one produces a statement that still parses and writes the wrong
+// vector against the wrong chunk.
+func buildEmbeddingInsert(ref SpaceRef, batch []ChunkVector) (string, []any, error) {
 	var (
 		sb   strings.Builder
 		args = make([]any, 0, len(batch)*2)
@@ -89,7 +107,7 @@ func (s *Store) SaveEmbeddings(ctx context.Context, ref SpaceRef, batch []ChunkV
 	fmt.Fprintf(&sb, "INSERT INTO %s (chunk_id, embedding) VALUES ", ref.Table())
 	for i, cv := range batch {
 		if len(cv.Vector) != ref.Space.Dim {
-			return fmt.Errorf("save embeddings for %s: chunk %d has dimension %d, want %d",
+			return "", nil, fmt.Errorf("save embeddings for %s: chunk %d has dimension %d, want %d",
 				ref, cv.ChunkID, len(cv.Vector), ref.Space.Dim)
 		}
 		if i > 0 {
@@ -102,10 +120,7 @@ func (s *Store) SaveEmbeddings(ctx context.Context, ref SpaceRef, batch []ChunkV
 	// should overwrite, and a chunk whose text changed keeps its id.
 	sb.WriteString(" ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding, created_at = now()")
 
-	if _, err := s.db.Exec(ctx, sb.String(), args...); err != nil {
-		return fmt.Errorf("save %d embeddings for %s: %w", len(batch), ref, err)
-	}
-	return nil
+	return sb.String(), args, nil
 }
 
 // EmbeddingStats reports how much of the corpus this space covers.

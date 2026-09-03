@@ -43,9 +43,11 @@ func yamlParser(text string) (yamlInfo, error) {
 		}
 
 		if !foundStart {
-			if trimmedLine == "" {
-				continue
-			}
+			// The opening --- must be the very first line, blank lines
+			// included. Obsidian, Jekyll and Hugo all require this, and the
+			// difference is visible: a --- further down is a horizontal rule,
+			// and reading it as frontmatter both invents a title and swallows
+			// everything above it out of the indexed body.
 			if trimmedLine == "---" {
 				foundStart = true
 				inFrontmatter = true

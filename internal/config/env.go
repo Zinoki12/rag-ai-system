@@ -54,3 +54,16 @@ func Required(key string) (string, error) {
 	}
 	return v, nil
 }
+
+// Bool returns the variable parsed as a bool, or def when it is unset.
+func Bool(key string, def bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q: not a boolean (try true or false)", key, raw)
+	}
+	return v, nil
+}
