@@ -45,10 +45,22 @@ func Handler(a Service, log *slog.Logger, cfg Config) http.Handler {
 	return h
 }
 
-// Run serves until ctx is cancelled, then drains in-flight requests.
+// Run listens on cfg.Addr and serves until ctx is cancelled.
 func Run(ctx context.Context, a Service, log *slog.Logger, cfg Config) error {
+	ln, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.Addr, err)
+	}
+	return Serve(ctx, ln, a, log, cfg)
+}
+
+// Serve runs on an already-open listener, then drains in-flight requests.
+//
+// Split out from Run so a test can listen on port 0 and still know where to
+// send a request; shutdown behaviour is exactly the kind of thing that has to
+// be exercised against a real socket to mean anything.
+func Serve(ctx context.Context, ln net.Listener, a Service, log *slog.Logger, cfg Config) error {
 	srv := &http.Server{
-		Addr:    cfg.Addr,
 		Handler: Handler(a, log, cfg),
 
 		// These four are not tuning knobs, they are the difference between a
@@ -61,15 +73,21 @@ func Run(ctx context.Context, a Service, log *slog.Logger, cfg Config) error {
 		WriteTimeout:      cfg.RequestTimeout + 30*time.Second,
 		IdleTimeout:       120 * time.Second,
 
-		BaseContext: func(net.Listener) context.Context { return ctx },
+		// WithoutCancel, not ctx itself. Requests must inherit ctx's values but
+		// not its cancellation: deriving them from the signal context would
+		// cancel every in-flight handler the instant SIGTERM arrives, so
+		// Shutdown would dutifully wait for handlers that had already been told
+		// to give up — a graceful shutdown that drops exactly the requests it
+		// exists to protect.
+		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Info("listening", slog.String("addr", cfg.Addr), slog.String("space", a.SpaceName()))
+		log.Info("listening", slog.String("addr", ln.Addr().String()), slog.String("space", a.SpaceName()))
 		// ErrServerClosed is what Shutdown causes; it is the success path here.
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- fmt.Errorf("listen on %s: %w", cfg.Addr, err)
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("serve on %s: %w", ln.Addr(), err)
 			return
 		}
 		errCh <- nil

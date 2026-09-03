@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -62,8 +63,13 @@ func Up(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	}
 	defer func() {
 		// Releasing the connection would drop the lock anyway, but doing it
-		// explicitly keeps the lock's lifetime visible in the code.
-		_, _ = conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", advisoryLockID)
+		// explicitly keeps the lock's lifetime visible in the code. A fresh
+		// context with its own deadline: ctx may already be cancelled by the
+		// time this runs, and an unlock that blocks forever in a defer is worse
+		// than one that gives up.
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, "SELECT pg_advisory_unlock($1)", advisoryLockID)
 	}()
 
 	// goose speaks database/sql. This adapter borrows connections from the same
