@@ -27,12 +27,12 @@ func TestConfigFromEnv(t *testing.T) {
 	})
 
 	t.Run("неизвестный провайдер называет допустимые", func(t *testing.T) {
-		t.Setenv("LLM_PROVIDER", "openai")
+		t.Setenv("LLM_PROVIDER", "no-such-vendor")
 		_, err := ConfigFromEnv()
 		if err == nil {
 			t.Fatal("ConfigFromEnv accepted an unknown provider")
 		}
-		for _, want := range []string{ProviderGoogle, ProviderOllama, ProviderStub} {
+		for _, want := range []string{ProviderGoogle, ProviderOpenAI, ProviderOllama, ProviderStub} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q does not mention %q", err, want)
 			}
@@ -70,7 +70,7 @@ func TestNewRejectsGoogleWithoutKey(t *testing.T) {
 }
 
 func TestNewUnknownProvider(t *testing.T) {
-	if _, err := New(context.Background(), Config{Provider: "openai"}); err == nil {
+	if _, err := New(context.Background(), Config{Provider: "no-such-vendor"}); err == nil {
 		t.Error("New accepted an unknown provider")
 	}
 }
