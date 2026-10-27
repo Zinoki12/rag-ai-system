@@ -73,8 +73,9 @@ func classifyGoogleErr(err error) error {
 	var apiErr genai.APIError
 	if errors.As(err, &apiErr) {
 		wrapped := fmt.Errorf("google generation: api error %d: %w", apiErr.Code, err)
-		if backoff.IsTransientStatus(apiErr.Code) {
-			return backoff.Mark(wrapped, 0)
+		after, daily := backoff.GoogleHint(apiErr.Details)
+		if backoff.IsTransientStatus(apiErr.Code) && !daily {
+			return backoff.Mark(wrapped, after)
 		}
 		return wrapped
 	}

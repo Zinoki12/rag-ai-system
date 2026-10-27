@@ -44,7 +44,13 @@ type Policy struct {
 }
 
 // Default is a conservative policy suitable for third-party HTTP APIs.
-var Default = Policy{MaxAttempts: 4, Base: 500 * time.Millisecond, Max: 15 * time.Second}
+//
+// Max is a minute because that is how hosted free tiers count quota, and they
+// say when it refills: a server-supplied delay cut short of that is a retry
+// that is certain to be refused. The exponential window cannot get near the
+// ceiling within four attempts (0.5, 1, 2 s), so in practice Max only ever
+// limits a delay the server asked for.
+var Default = Policy{MaxAttempts: 4, Base: 500 * time.Millisecond, Max: time.Minute}
 
 func (p Policy) normalized() Policy {
 	if p.MaxAttempts < 1 {

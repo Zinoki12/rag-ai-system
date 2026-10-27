@@ -292,7 +292,15 @@ func (k *Knowledge) Index(ctx context.Context) (IndexResult, error) {
 }
 
 // embedPending fills in vectors for chunks that do not have one in this space.
+//
+// Vectors are saved after every provider call, not once per claimed round. A
+// round is larger than one call (128 against Gemini's 100), and under a quota
+// it is the later calls that are refused. Saving per round threw away what the
+// earlier calls had returned, so a pass that kept hitting the limit spent the
+// quota on the same first hundred chunks every time and never finished. Saved
+// per call, each pass keeps what it got and the next one starts after it.
 func (k *Knowledge) embedPending(ctx context.Context) (int, error) {
+	size := max(k.embed.MaxBatch(), 1)
 	done := 0
 	for {
 		pending, err := k.store.PendingChunks(ctx, k.space, pendingBatch)
@@ -303,26 +311,30 @@ func (k *Knowledge) embedPending(ctx context.Context) (int, error) {
 			return done, nil
 		}
 
-		texts := make([]string, len(pending))
-		for i, c := range pending {
-			texts[i] = c.Text
-		}
+		for start := 0; start < len(pending); start += size {
+			part := pending[start:min(start+size, len(pending))]
 
-		vectors, err := embed.Batched(ctx, k.embed, texts, embed.KindDocument)
-		if err != nil {
-			return done, fmt.Errorf("embed %d chunks: %w", len(texts), err)
-		}
+			texts := make([]string, len(part))
+			for i, c := range part {
+				texts[i] = c.Text
+			}
 
-		batch := make([]storage.ChunkVector, len(pending))
-		for i, c := range pending {
-			batch[i] = storage.ChunkVector{ChunkID: c.ID, Vector: vectors[i]}
-		}
-		if err := k.store.SaveEmbeddings(ctx, k.space, batch); err != nil {
-			return done, err
-		}
+			vectors, err := embed.Batched(ctx, k.embed, texts, embed.KindDocument)
+			if err != nil {
+				return done, fmt.Errorf("embed %d chunks (%d saved before this): %w", len(texts), done, err)
+			}
 
-		done += len(pending)
-		k.log.Debug("embedded a batch", slog.Int("chunks", len(pending)), slog.Int("total", done))
+			batch := make([]storage.ChunkVector, len(part))
+			for i, c := range part {
+				batch[i] = storage.ChunkVector{ChunkID: c.ID, Vector: vectors[i]}
+			}
+			if err := k.store.SaveEmbeddings(ctx, k.space, batch); err != nil {
+				return done, err
+			}
+
+			done += len(part)
+			k.log.Debug("embedded a batch", slog.Int("chunks", len(part)), slog.Int("total", done))
+		}
 	}
 }
 
